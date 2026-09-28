@@ -1,0 +1,129 @@
+# Builds Parkoid from the PRIVATE source repo (mordf0kas/parkoid) and publishes the installers here.
+# Runs in this public repo because Actions minutes are free for public repos; the source is fetched
+# with a read-only deploy key (secret PARKOID_SRC_KEY) and never stored here. Only the installers
+# end up public, in the release.
+# Run it by hand: Actions -> build -> Run workflow.
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / commit of mordf0kas/parkoid to build"
+        default: main
+      windows:
+        description: "Also build the Windows installer + zips (they are usually built locally)"
+        type: boolean
+        default: false
+      publish:
+        description: "Upload the installers to release v<version> here (version from CMakeLists.txt)"
+        type: boolean
+        default: true
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Skip Windows unless asked
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ] && [ "${{ inputs.windows }}" != "true" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Fetch the source (private repo, read-only deploy key)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: mordf0kas/parkoid
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.PARKOID_SRC_KEY }}
+          persist-credentials: false
+      - name: Fetch JUCE 8.0.4
+        if: steps.gate.outputs.run == 'true'
+        run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git JUCE
+      - name: Configure
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          else
+            cmake -B build
+          fi
+      - name: Offline validation suite
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          cmake --build build --config Release --target parkoid_render_test --parallel 4
+          mkdir -p Tests/out
+          if [ -f build/parkoid_render_test_artefacts/Release/parkoid_render_test.exe ]; then build/parkoid_render_test_artefacts/Release/parkoid_render_test.exe Tests/out; else build/parkoid_render_test_artefacts/Release/parkoid_render_test Tests/out; fi
+      - name: Build VST3 + Standalone
+        if: steps.gate.outputs.run == 'true'
+        run: cmake --build build --config Release --target Parkoid_VST3 Parkoid_Standalone --parallel 4
+      - name: Package macOS installer (.pkg)
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^project(Parkoid VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)
+          R="build/Parkoid_artefacts/Release"
+          # JUCE writes moduleinfo.json after the linker's ad-hoc signature: re-seal the final bundles
+          codesign --force --deep --sign - "$R/VST3/Parkoid.vst3"
+          codesign --verify --deep --strict -vv "$R/VST3/Parkoid.vst3"
+          codesign --force --deep --sign - "$R/Standalone/Parkoid.app"
+          codesign --verify --deep --strict -vv "$R/Standalone/Parkoid.app"
+          mkdir -p "pkg_root/Applications" "pkg_root/Library/Audio/Plug-Ins/VST3" pkg_scripts out
+          cp -R "$R/VST3/Parkoid.vst3" "pkg_root/Library/Audio/Plug-Ins/VST3/"
+          cp -R "$R/Standalone/Parkoid.app" "pkg_root/Applications/"
+          printf '#!/bin/bash\nxattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Parkoid.vst3" 2>/dev/null || true\nxattr -dr com.apple.quarantine "/Applications/Parkoid.app" 2>/dev/null || true\nexit 0\n' > pkg_scripts/postinstall
+          chmod +x pkg_scripts/postinstall
+          # non-relocatable bundles, so Installer always writes to the system folders
+          pkgbuild --analyze --root pkg_root components.plist
+          i=0; while plutil -extract "$i" xml1 -o /dev/null components.plist 2>/dev/null; do plutil -replace "$i.BundleIsRelocatable" -bool NO components.plist; i=$((i+1)); done
+          pkgbuild --root pkg_root --component-plist components.plist --scripts pkg_scripts --identifier "com.drelva.parkoid.installer" --version "$VERSION" --install-location / component.pkg
+          productbuild --package component.pkg "out/Parkoid-v$VERSION-Installer-macOS.pkg"
+          echo "$VERSION" > out/VERSION
+          ls -la out
+      - name: Package Windows installer + zips
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path CMakeLists.txt -Pattern 'project\(Parkoid VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\Parkoid.iss
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item installer_out\Parkoid-Setup.exe "out\Parkoid-v$v-Setup-Windows.exe"
+          Compress-Archive -Path build\Parkoid_artefacts\Release\VST3\Parkoid.vst3 -DestinationPath "out\Parkoid-v$v-VST3-Windows.zip"
+          Compress-Archive -Path build\Parkoid_artefacts\Release\Standalone\Parkoid.exe -DestinationPath "out\Parkoid-v$v-Standalone-Windows.zip"
+          Set-Content -Path out\VERSION -Value $v -NoNewline
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          name: Parkoid-${{ matrix.os }}
+          path: out
+
+  release:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload to the release
+        run: |
+          VERSION=$(tr -d '\r\n' < dist/VERSION); TAG="v$VERSION"
+          FILES=(); for f in dist/Parkoid-v*; do [ -s "$f" ] && FILES+=("$f"); done
+          [ ${#FILES[@]} -gt 0 ] || { echo "::error::nothing to upload"; exit 1; }
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" --title "Parkoid $TAG" --notes "Parkoid $TAG"
+          fi
+          printf 'Uploaded to %s:\n%s\n' "$TAG" "$(ls dist)" >> "$GITHUB_STEP_SUMMARY"
