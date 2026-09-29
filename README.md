@@ -13,6 +13,7 @@ and the PDF manual.
 
 | Version | What's in it |
 |---|---|
+| **v0.3.0** | modulation matrix: 8 slots, any parameter as destination, full length or chosen steps (parameter locks), MOD A/B step lanes, LFOs, random, envelopes; right-click any knob to modulate; sound generator RND / VARY / UNDO in 4 styles |
 | **v0.2.0** | ELASTIC + BLEEPS: rebuilt DSP (2x/4x oversampling, drive, bass comp, mono low end), MIDI play mode with legato/glide, pitch CURVE + BOUNCE (+/-48 st), per-step slide + probability, GEN in a scale, dotted/triplet ducked ping-pong, 19 categorised presets + user presets, interactive UI, Windows + macOS installers, PDF manual |
 | **v0.1.0** | first release: FM voice, MS-20 filter, tape delay + space, 16-step sequencer with GEN / MUT, 6 factory presets, Windows + macOS installers, PDF manual |
 
