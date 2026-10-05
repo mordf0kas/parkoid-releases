@@ -60,9 +60,9 @@ jobs:
           cmake --build build --config Release --target parkoid_render_test --parallel 4
           mkdir -p Tests/out
           if [ -f build/parkoid_render_test_artefacts/Release/parkoid_render_test.exe ]; then build/parkoid_render_test_artefacts/Release/parkoid_render_test.exe Tests/out; else build/parkoid_render_test_artefacts/Release/parkoid_render_test Tests/out; fi
-      - name: Build VST3 + Standalone
+      - name: Build VST3
         if: steps.gate.outputs.run == 'true'
-        run: cmake --build build --config Release --target Parkoid_VST3 Parkoid_Standalone --parallel 4
+        run: cmake --build build --config Release --target Parkoid_VST3 --parallel 4
       - name: Package macOS installer (.pkg)
         if: steps.gate.outputs.run == 'true' && matrix.os == 'macos-latest'
         shell: bash
@@ -73,12 +73,9 @@ jobs:
           # JUCE writes moduleinfo.json after the linker's ad-hoc signature: re-seal the final bundles
           codesign --force --deep --sign - "$R/VST3/Parkoid.vst3"
           codesign --verify --deep --strict -vv "$R/VST3/Parkoid.vst3"
-          codesign --force --deep --sign - "$R/Standalone/Parkoid.app"
-          codesign --verify --deep --strict -vv "$R/Standalone/Parkoid.app"
-          mkdir -p "pkg_root/Applications" "pkg_root/Library/Audio/Plug-Ins/VST3" pkg_scripts out
+          mkdir -p "pkg_root/Library/Audio/Plug-Ins/VST3" pkg_scripts out
           cp -R "$R/VST3/Parkoid.vst3" "pkg_root/Library/Audio/Plug-Ins/VST3/"
-          cp -R "$R/Standalone/Parkoid.app" "pkg_root/Applications/"
-          printf '#!/bin/bash\nxattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Parkoid.vst3" 2>/dev/null || true\nxattr -dr com.apple.quarantine "/Applications/Parkoid.app" 2>/dev/null || true\nexit 0\n' > pkg_scripts/postinstall
+          printf '#!/bin/bash\nxattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Parkoid.vst3" 2>/dev/null || true\nexit 0\n' > pkg_scripts/postinstall
           chmod +x pkg_scripts/postinstall
           # non-relocatable bundles, so Installer always writes to the system folders
           pkgbuild --analyze --root pkg_root components.plist
@@ -96,8 +93,7 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item installer_out\Parkoid-Setup.exe "out\Parkoid-v$v-Setup-Windows.exe"
           Compress-Archive -Path build\Parkoid_artefacts\Release\VST3\Parkoid.vst3 -DestinationPath "out\Parkoid-v$v-VST3-Windows.zip"
-          Compress-Archive -Path build\Parkoid_artefacts\Release\Standalone\Parkoid.exe -DestinationPath "out\Parkoid-v$v-Standalone-Windows.zip"
-          Set-Content -Path out\VERSION -Value $v -NoNewline
+          Set-Content -Path out\VERSION -Value $v -NoNewline -Encoding utf8
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.run == 'true'
         with:
